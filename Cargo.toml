@@ -2,6 +2,9 @@
 name = "saleae-importer"
 version = "1.0.0"
 edition = "2021"
+license = "MIT"
+description = "A library for reading and writing Saleae Logic 2 binary capture data"
+repository = "https://github.com/jam1garner/saleae-importer"
 
 [dependencies]
 binrw = "0.10.0"
