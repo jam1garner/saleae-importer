@@ -71,8 +71,15 @@ impl<'samples> Iterator for SampleIter<'samples> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let ret = (
+            // alternating signal
             self.initial ^ ((self.current & 1) != 0),
-            *self.samples.get(self.current)?,
+            // this sample time minus last sample time
+            *self.samples.get(self.current)?
+                - self
+                    .current
+                    .checked_sub(1)
+                    .and_then(|last| self.samples.get(last).copied())
+                    .unwrap_or(0.0),
         );
 
         self.current += 1;
