@@ -1,4 +1,16 @@
 //! A library for reading and writing Saleae Logic 2 binary capture data
+//!
+//! ### Example
+//!
+//! ```
+//! use saleae_importer::SaleaeExport;
+//!
+//! let data = SaleaeExport::open("digital_0.bin").unwrap();
+//!
+//! for (is_high, time_len) in data.assume_digital().iter_samples() {
+//!     println!("bit state: {is_high} | time: {time_len}");
+//! }
+//! ```
 use std::{io::BufWriter, path::Path};
 
 use binrw::{
@@ -9,7 +21,7 @@ use binrw::{
 /// A binary representing data parsed from a Saleae Logic 2 digital.bin export file
 #[binrw]
 #[brw(little, magic = b"<SALEAE>")]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SaleaeExport {
     /// Version of the export file format, only version 0 is supported
     #[br(assert(version == 0))]
@@ -21,7 +33,7 @@ pub struct SaleaeExport {
 
 /// The underlying data of the file, either digital or analog
 #[binrw]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Data {
     #[brw(magic = 0u32)]
     Digital(DigitalData),
@@ -32,10 +44,10 @@ pub enum Data {
 
 /// The data for digital captures exported by saleae logic 2
 #[binrw]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DigitalData {
-    /// The initial state of the
-    pub initial_state: u32,
+    /// The initial state of the capture
+    pub initial_state: State,
     pub begin_time: f64,
     pub end_time: f64,
 
@@ -46,9 +58,73 @@ pub struct DigitalData {
     pub transition_times: Vec<f64>,
 }
 
+/// An iterator over the sample data returning pairs of (bool, f64) representing
+/// whether the sample is high (true) or low (false) as well as the length of the sample
+pub struct SampleIter<'samples> {
+    samples: &'samples [f64],
+    current: usize,
+    initial: bool,
+}
+
+impl<'samples> Iterator for SampleIter<'samples> {
+    type Item = (bool, f64);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let ret = (
+            self.initial ^ ((self.current & 1) != 0),
+            *self.samples.get(self.current)?,
+        );
+
+        self.current += 1;
+
+        Some(ret)
+    }
+}
+
+impl DigitalData {
+    pub fn iter_samples(&self) -> SampleIter<'_> {
+        SampleIter {
+            samples: &self.transition_times,
+            current: 0,
+            initial: self.initial_state.into(),
+        }
+    }
+}
+
+/// The state of whether a sample is high or low
+#[binwrite]
+#[derive(Debug, Copy, Clone)]
+pub enum State {
+    #[bw(magic = 0u32)]
+    Low = 0,
+
+    #[bw(magic = 1u32)]
+    High = 1,
+}
+
+impl BinRead for State {
+    type Args = ();
+
+    fn read_options<R: io::Read + io::Seek>(
+        reader: &mut R,
+        _options: &binrw::ReadOptions,
+        _args: Self::Args,
+    ) -> BinResult<Self> {
+        reader
+            .read_le()
+            .map(|x: u32| if x == 0 { State::Low } else { State::High })
+    }
+}
+
+impl From<State> for bool {
+    fn from(value: State) -> Self {
+        matches!(value, State::High)
+    }
+}
+
 /// The data for analog capture exports
 #[binrw]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct AnalogData {
     /// The time the capture begins
     pub begin_time: f64,
@@ -68,6 +144,30 @@ pub struct AnalogData {
 }
 
 impl SaleaeExport {
+    /// Assume the underlying data is analog and proceed accordingly
+    ///
+    /// ## Panics
+    ///
+    /// Panics if the capture being processed is digital
+    pub fn assume_analog(self) -> AnalogData {
+        match self.file_data {
+            Data::Analog(analog) => analog,
+            Data::Digital(_) => panic!("Expected data to be digital, found analog"),
+        }
+    }
+
+    /// Assume the underlying data is digital and proceed accordingly
+    ///
+    /// ## Panics
+    ///
+    /// Panics if the capture being processed is analog
+    pub fn assume_digital(self) -> DigitalData {
+        match self.file_data {
+            Data::Digital(digital) => digital,
+            Data::Analog(_) => panic!("Expected data to be digital, found analog"),
+        }
+    }
+
     /// Read an export from disk
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
         let path = path.as_ref();
